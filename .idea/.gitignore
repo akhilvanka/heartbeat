@@ -9,3 +9,6 @@
 
 # Delete everything .idea related
 .idea/
+/heartbeat.iml
+/modules.xml
+/vcs.xml
