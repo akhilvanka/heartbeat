@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"heartbeat/client"
+	"heartbeat/server"
 	"io"
 	"log"
 	"os"
@@ -12,8 +13,9 @@ import (
 )
 
 var (
-	isServer  bool // Makeshift variable name for operations now
-	serverURL string
+	isServer bool // Makeshift variable name for operations now
+	//serverURL string
+	mongoURI string
 )
 
 func main() {
@@ -21,7 +23,7 @@ func main() {
 	ctx, cancel := context.WithCancel(ctx)
 
 	isServer = false
-	serverURL = "http://lcoalhost:3000"
+	mongoURI = ""
 
 	signalChange := make(chan os.Signal, 1)
 	signal.Notify(signalChange, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
@@ -57,6 +59,10 @@ func run(ctx context.Context, out io.Writer) error {
 	log.SetOutput(out)
 
 	if isServer {
+		err := server.Start()
+		if err != nil {
+			return err
+		}
 		return nil
 	} else {
 		for {
@@ -65,9 +71,13 @@ func run(ctx context.Context, out io.Writer) error {
 				return nil
 			case <-time.Tick(120 * time.Second):
 				log.Printf("Running data collection")
-				err := client.CollectionRun(serverURL)
+				data, err := client.CollectionRun()
 				if err != nil {
 					return err
+				}
+				sendDataErr := client.SendData(mongoURI, data)
+				if sendDataErr != nil {
+					return sendDataErr
 				}
 			}
 		}

@@ -1,26 +1,31 @@
 package client
 
 import (
-	"bytes"
-	"encoding/json"
-	"errors"
+	"context"
 	"fmt"
-	"io"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"log"
 	"net/http"
 	"os"
 	"regexp"
 	"strings"
+	"time"
 )
 
 type Payload struct {
-	SystemStatus int
-	Services     []Domain
+	ID         primitive.ObjectID `bson:"_id,omitempty"`
+	SystemName string             `bson:"system_name,omitempty"`
+	UploadTime int64              `bson:"upload_time,omitempty"`
+	Services   []Domain           `bson:"services,omitempty"`
 }
 
 type Domain struct {
-	ServiceName   string
-	ServiceStatus int
+	ID            primitive.ObjectID `bson:"_id,omitempty"`
+	ServiceName   string             `bson:"service_name,omitempty"`
+	ServiceStatus bool               //`bson:"service_status,omitempty"`
 }
 
 func ReadCaddyfile() ([]string, error) {
@@ -30,7 +35,6 @@ func ReadCaddyfile() ([]string, error) {
 		return nil, err
 	}
 	text := string(fileContent)
-
 	// Define the regular expression pattern
 	pattern := regexp.MustCompile(`(?m)\b([a-zA-Z0-9.-]+)\s*{`)
 
@@ -55,11 +59,11 @@ func QueryURL(url string) bool {
 	return true
 }
 
-func CollectionRun(serverURL string) error {
+func CollectionRun() (Payload, error) {
 	var statusList []Domain
 	data, err := ReadCaddyfile()
 	if err != nil {
-		return err
+		return Payload{}, err
 	}
 	for _, domain := range data {
 		status := QueryURL(fmt.Sprintf("https://%s", domain))
@@ -67,37 +71,53 @@ func CollectionRun(serverURL string) error {
 			log.Printf("Domain %s is up", domain)
 			a := Domain{
 				ServiceName:   domain,
-				ServiceStatus: 1,
+				ServiceStatus: true,
 			}
 			statusList = append(statusList, a)
 		} else {
 			log.Printf("Domain %s is down", domain)
 			a := Domain{
 				ServiceName:   domain,
-				ServiceStatus: 0,
+				ServiceStatus: false,
 			}
 			statusList = append(statusList, a)
 		}
 	}
+	hostName, err := os.Hostname()
 	payloadMessage := Payload{
-		SystemStatus: 1,
-		Services:     statusList,
+		SystemName: hostName,
+		UploadTime: time.Now().Unix(),
+		Services:   statusList,
 	}
-	body, _ := json.Marshal(payloadMessage)
+	return payloadMessage, nil
+}
 
-	// Send JSON status
-	resp, err := http.Post(serverURL, "application/json", bytes.NewBuffer(body))
+func SendData(URI string, data Payload) error {
+
+	serverAPI := options.ServerAPI(options.ServerAPIVersion1)
+	opts := options.Client().ApplyURI(URI).SetServerAPIOptions(serverAPI)
+
+	client, err := mongo.Connect(context.TODO(), opts)
 	if err != nil {
 		return err
 	}
-	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
-			log.Printf("Error found when closing body")
+	defer func() {
+		if err = client.Disconnect(context.TODO()); err != nil {
+			panic(err)
 		}
-	}(resp.Body) // Handle this and check if it actually leaks (Shouldn't but just to be safe)
-	if resp.StatusCode != 200 {
-		return errors.New("unable to post data to server")
+	}()
+	// Send a ping to confirm a successful connection
+	if err := client.Database("Mirror").RunCommand(context.TODO(), bson.D{{"ping", 1}}).Err(); err != nil {
+		return err
+	}
+
+	collection := client.Database("Mirror").Collection("data")
+	hostName, _ := os.Hostname()
+	filter := bson.D{{"system_name", hostName}}
+	_, err = collection.ReplaceOne(context.TODO(), filter, &data, options.Replace().SetUpsert(true))
+	log.Printf("Sending data packet to database")
+	if err != nil {
+		return err
 	}
 	return nil
 }
