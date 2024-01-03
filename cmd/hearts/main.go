@@ -12,18 +12,15 @@ import (
 	"time"
 )
 
-var (
-	isServer bool // Makeshift variable name for operations now
-	//serverURL string
-	mongoURI string
-)
-
 func main() {
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)
 
-	isServer = false
-	mongoURI = ""
+	cfg, err := client.ReturnConfig("/etc/heartbeat/config.yml")
+	if err != nil {
+		log.Printf("Couldn't read config file")
+		os.Exit(2)
+	}
 
 	signalChange := make(chan os.Signal, 1)
 	signal.Notify(signalChange, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
@@ -50,16 +47,16 @@ func main() {
 		}
 	}()
 
-	if err := run(ctx, os.Stdout); err != nil {
+	if err := run(ctx, os.Stdout, cfg); err != nil {
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, out io.Writer) error {
+func run(ctx context.Context, out io.Writer, cfg client.Config) error {
 	log.SetOutput(out)
 
-	if isServer {
-		err := server.Start()
+	if cfg.Server.Enabled {
+		err := server.Start(cfg)
 		if err != nil {
 			return err
 		}
@@ -69,13 +66,13 @@ func run(ctx context.Context, out io.Writer) error {
 			select {
 			case <-ctx.Done():
 				return nil
-			case <-time.Tick(120 * time.Second):
+			case <-time.Tick(240 * time.Second):
 				log.Printf("Running data collection")
 				data, err := client.CollectionRun()
 				if err != nil {
 					return err
 				}
-				sendDataErr := client.SendData(mongoURI, data)
+				sendDataErr := client.SendData(cfg.Database.URI, data)
 				if sendDataErr != nil {
 					return sendDataErr
 				}
